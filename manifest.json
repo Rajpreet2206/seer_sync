@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "SeerSync",
+  "description": "Browser-native AI-enabled real-time communication extension.",
+  "version": "0.1.0",
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/ssys_logo.png",
+      "48": "icons/ssys_logo.png",
+      "128": "icons/ssys_logo.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "permissions": ["storage", "tabs", "scripting", "identity"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/index.ts"]
+    }
+  ]
+}

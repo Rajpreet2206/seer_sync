@@ -1,0 +1,1 @@
+{"root":["./src/background/index.ts","./src/content/index.ts","./src/lib/firebase.ts","./src/lib/signaling.ts","./src/lib/webrtc.ts","./src/popup/app.tsx","./src/popup/authbutton.tsx","./src/popup/friendslist.tsx","./src/popup/popup.tsx","./src/popup/main.tsx"],"version":"5.9.3"}
