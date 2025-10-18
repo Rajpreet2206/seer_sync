@@ -1,45 +1,38 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserResponse
-from typing import Dict
+from app.models.user import User
+from app.db.session import get_db
 import uuid
-from datetime import datetime
 
 router = APIRouter()
 
-# Temporary in-memory storage (will be replaced with database)
-users_db: Dict[str, dict] = {}
-
 @router.post("/register", response_model=UserResponse)
-async def register_user(user: UserCreate):
+async def register_user(user: UserCreate, db: Session = Depends(get_db)):
     # Check if user already exists
-    existing_user = next(
-        (u for u in users_db.values() if u["google_id"] == user.google_id),
-        None
-    )
+    existing_user = db.query(User).filter(User.google_id == user.google_id).first()
     
     if existing_user:
         return existing_user
     
     # Create new user
-    user_id = str(uuid.uuid4())
-    new_user = {
-        "id": user_id,
-        "email": user.email,
-        "name": user.name,
-        "google_id": user.google_id,
-        "picture": user.picture,
-        "created_at": datetime.now()
-    }
+    new_user = User(
+        id=str(uuid.uuid4()),
+        email=user.email,
+        name=user.name,
+        google_id=user.google_id,
+        picture=user.picture
+    )
     
-    users_db[user_id] = new_user
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
     return new_user
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user(google_id: str):
-    user = next(
-        (u for u in users_db.values() if u["google_id"] == google_id),
-        None
-    )
+async def get_current_user(google_id: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.google_id == google_id).first()
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -47,5 +40,6 @@ async def get_current_user(google_id: str):
     return user
 
 @router.get("/users")
-async def list_users():
-    return {"users": list(users_db.values()), "count": len(users_db)}
+async def list_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return {"users": users, "count": len(users)}
