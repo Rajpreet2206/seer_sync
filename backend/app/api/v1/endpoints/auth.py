@@ -43,3 +43,10 @@ async def get_current_user(google_id: str, db: Session = Depends(get_db)):
 async def list_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
     return {"users": users, "count": len(users)}
+
+@router.get("/by-google-id")
+def get_user_by_google_id(google_id: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.google_id == google_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"id": str(user.id), "email": user.email, "name": user.name}

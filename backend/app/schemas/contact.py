@@ -8,6 +8,15 @@ class ContactBase(BaseModel):
 class ContactCreate(ContactBase):
     pass
 
+class InviteCreate(BaseModel):
+    email: EmailStr
+    message: Optional[str] = None
+
+class InviteResponse(BaseModel):
+    success: bool
+    message: str
+    email: str
+
 class ContactResponse(BaseModel):
     id: str
     user_id: str

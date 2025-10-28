@@ -6,6 +6,14 @@ export interface ApiResponse<T = any> {
   error?: string;
 }
 
+export interface UserResponse {
+  id: string;
+  email: string;
+  name: string;
+  google_id: string;
+  picture?: string;
+}
+
 export async function apiRequest<T>(
   endpoint: string,
   options?: RequestInit
@@ -39,7 +47,7 @@ export const api = {
   async getHealth() {
     return apiRequest('/health');
   },
-  
+
   async getRoot() {
     return apiRequest('/');
   },
@@ -64,10 +72,17 @@ export const api = {
     return apiRequest('/api/v1/auth/users');
   },
 
-  async addContact(userId: string, contactEmail: string) {
-    return apiRequest(`/api/v1/contacts/add?user_id=${userId}`, {
+  // -----------------------------
+  // New method to fetch user by email
+  // -----------------------------
+  async getUserByEmail(email: string) {
+    return apiRequest(`/api/v1/users/by-email?email=${encodeURIComponent(email)}`);
+  },
+
+  // Updated to require user_id and contact_user_id
+  async addContact(userId: string, contactUserId: string) {
+    return apiRequest(`/api/v1/contacts/add?user_id=${userId}&contact_user_id=${contactUserId}`, {
       method: 'POST',
-      body: JSON.stringify({ contact_email: contactEmail }),
     });
   },
 
@@ -78,6 +93,13 @@ export const api = {
   async deleteContact(contactId: string, userId: string) {
     return apiRequest(`/api/v1/contacts/${contactId}?user_id=${userId}`, {
       method: 'DELETE',
+    });
+  },
+
+  async sendInvite(userId: string, email: string, message?: string) {
+    return apiRequest(`/api/v1/contacts/invite?user_id=${userId}`, {
+      method: 'POST',
+      body: JSON.stringify({ email, message }),
     });
   },
 };

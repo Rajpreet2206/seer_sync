@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Comm",
+  "name": "Seer Sync",
   "version": "0.1.0",
   "description": "Real-time communication platform for Chrome",
   "action": {

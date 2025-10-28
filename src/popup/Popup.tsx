@@ -3,26 +3,71 @@ import { api } from '../lib/api/client';
 import { signInWithGoogle, signOut, getCurrentUser } from '../../extension/src/lib/auth/google-auth';
 import type { User } from '../types/auth.types';
 import type { Contact } from '../types/contact.types';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const API_URL = 'http://localhost:8000';
+const GEMINI_API_KEY = "AIzaSyBYiu0nNAURf96XWjnHf0Vt05Ndc2aUzUI";
+
+interface Message {
+  id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+}
 
 const Popup: React.FC = () => {
   const [status, setStatus] = useState<string>('Loading...');
   const [apiStatus, setApiStatus] = useState<string>('Checking...');
   const [user, setUser] = useState<User | null>(null);
+  const [internalUserId, setInternalUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [showAddContact, setShowAddContact] = useState(false);
   const [newContactEmail, setNewContactEmail] = useState('');
   const [addingContact, setAddingContact] = useState(false);
-
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteMessage, setInviteMessage] = useState('');
+  const [sendingInvite, setSendingInvite] = useState(false);
+  const [chatContact, setChatContact] = useState<Contact | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [currentUrl, setCurrentUrl] = useState<string>('');
+  const [showProcessMenu, setShowProcessMenu] = useState(false);
+  const [selectedProcessType, setSelectedProcessType] = useState<string | null>(null);
+  const [processingMessage, setProcessingMessage] = useState(false);
+  const [processedPreview, setProcessedPreview] = useState<string | null>(null);
+  const [pageContent, setPageContent] = useState<string>('');
   useEffect(() => {
     initializePopup();
   }, []);
 
   useEffect(() => {
     if (user?.id) {
-      loadContacts();
+      getInternalUserId();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (internalUserId) {
+      loadContacts();
+    }
+  }, [internalUserId]);
+
+  useEffect(() => {
+    if (chatContact && internalUserId) {
+      loadMessages();
+    }
+  }, [chatContact, internalUserId]);
+
+  useEffect(() => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.url) {
+        setCurrentUrl(tabs[0].url);
+      }
+    });
+  }, []);
 
   const initializePopup = async () => {
     const currentUser = await getCurrentUser();
@@ -54,12 +99,163 @@ const Popup: React.FC = () => {
     }
   };
 
-  const loadContacts = async () => {
+  const getInternalUserId = async () => {
     if (!user?.id) return;
-    
-    const result = await api.listContacts(user.id);
+    try {
+      const resp = await fetch(
+        `${API_URL}/api/v1/auth/by-google-id?google_id=${user.id}`
+      ).then(r => r.json());
+      if (resp.id) {
+        setInternalUserId(resp.id);
+      }
+    } catch (error) {
+      console.error('Get internal user ID failed:', error);
+    }
+  };
+
+  const loadContacts = async () => {
+    if (!internalUserId) return;
+    const result = await api.listContacts(internalUserId);
     if (result.success && result.data) {
       setContacts(result.data as Contact[]);
+    }
+  };
+
+  const loadMessages = async () => {
+    if (!chatContact || !internalUserId) return;
+    setLoadingMessages(true);
+    try {
+      const resp = await fetch(
+        `${API_URL}/api/v1/messages/history?user_id=${internalUserId}&contact_id=${chatContact.contact_user_id}`
+      ).then(r => r.json());
+      setMessages(resp || []);
+    } catch (error) {
+      console.error('Load messages failed:', error);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const handleSendMessage = async (processType?: string) => {
+    if (!messageInput.trim() || !internalUserId || !chatContact) return;
+
+    if (processType && !processedPreview) {
+      // First stage: process and show preview
+      setProcessingMessage(true);
+      const processed = await processMessage(messageInput.trim(), processType);
+      setProcessedPreview(processed);
+      setProcessingMessage(false);
+      return;
+    }
+
+    // Second stage: send
+    const finalMessage = processedPreview || messageInput.trim();
+    const messageWithUrl = `${finalMessage}\n\n📎 ${currentUrl}`;
+
+    try {
+      const resp = await fetch(
+        `${API_URL}/api/v1/messages/send?sender_id=${internalUserId}&receiver_id=${chatContact.contact_user_id}&content=${encodeURIComponent(messageWithUrl)}`,
+        { method: 'POST' }
+      ).then(r => r.json());
+
+      if (resp.success) {
+        setMessageInput('');
+        setShowProcessMenu(false);
+        setSelectedProcessType(null);
+        setProcessedPreview(null);
+        await loadMessages();
+      }
+    } catch (error) {
+      console.error('Send message failed:', error);
+    }
+  };
+
+const processMessage = async (text: string, type: string): Promise<string> => {
+  console.log('Processing:', { text, type });
+  try {
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    const prompt = getPrompt(text, type);
+    console.log('Prompt:', prompt);
+    
+    const result = await model.generateContent(prompt);
+    const processedText = result.response.text();
+    
+    console.log('Processed text:', processedText);
+    return processedText;
+  } catch (error) {
+    console.error('Gemini API error:', error);
+    return text;
+  }
+};
+
+const getPrompt = (text: string, type: string): string => {
+  const prompts: { [key: string]: string } = {
+    proofread: `Fix grammar and spelling errors in this text, keep it concise:\n"${text}"`,
+    summarize: `Summarize this in 1-2 sentences:\n"${text}"`,
+    translate: `Translate this to Spanish:\n"${text}"`,
+    rewrite: `Rewrite this in a better way:\n"${text}"`,
+    generate: `Generate a professional version of this:\n"${text}"`
+  };
+  return prompts[type] || text;
+};
+
+
+  const handleDeleteMessage = async (messageId: string) => {
+    try {
+      const resp = await fetch(
+        `${API_URL}/api/v1/messages/delete?message_id=${messageId}&user_id=${internalUserId}`,
+        { method: 'DELETE' }
+      ).then(r => r.json());
+
+      if (resp.success) {
+        await loadMessages();
+      }
+    } catch (error) {
+      console.error('Delete message failed:', error);
+    }
+  };
+
+  const handleOpenChat = (contact: Contact) => {
+    setChatContact(contact);
+  };
+
+  const handleCloseChat = () => {
+    setChatContact(null);
+    setMessages([]);
+  };
+
+  const handleSendInvite = async () => {
+    if (!internalUserId || !inviteEmail.trim()) return;
+
+    setSendingInvite(true);
+    try {
+      const result = await fetch(
+        `${API_URL}/api/v1/contacts/invite?user_id=${internalUserId}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: inviteEmail.trim(),
+            message: inviteMessage.trim() || ''
+          })
+        }
+      ).then(r => r.json());
+
+      if (result.success) {
+        alert(`Invitation sent to ${inviteEmail}!`);
+        setInviteEmail('');
+        setInviteMessage('');
+        setShowInvite(false);
+      } else {
+        alert(result.detail || result.message || 'Failed to send invite');
+      }
+    } catch (error) {
+      console.error('Send invite failed:', error);
+      alert('Failed to send invite');
+    } finally {
+      setSendingInvite(false);
     }
   };
 
@@ -80,6 +276,7 @@ const Popup: React.FC = () => {
     try {
       await signOut();
       setUser(null);
+      setInternalUserId(null);
       setContacts([]);
     } catch (error) {
       console.error('Logout failed:', error);
@@ -87,17 +284,27 @@ const Popup: React.FC = () => {
   };
 
   const handleAddContact = async () => {
-    if (!user?.id || !newContactEmail.trim()) return;
+    if (!internalUserId || !newContactEmail.trim()) return;
 
     setAddingContact(true);
     try {
-      const result = await api.addContact(user.id, newContactEmail.trim());
-      if (result.success) {
+      const userResp = await fetch(
+        `${API_URL}/api/v1/contacts/by-email?email=${encodeURIComponent(newContactEmail.trim())}`,
+        { method: 'GET' }
+      ).then(r => r.json());
+
+      if (!userResp.id) {
+        alert('User not found');
+        return;
+      }
+
+      const addResp = await api.addContact(internalUserId, userResp.id);
+      if (addResp.success) {
         setNewContactEmail('');
         setShowAddContact(false);
         await loadContacts();
       } else {
-        alert(result.error || 'Failed to add contact');
+        alert(addResp.error || 'Failed to add contact');
       }
     } catch (error) {
       console.error('Add contact failed:', error);
@@ -108,11 +315,10 @@ const Popup: React.FC = () => {
   };
 
   const handleDeleteContact = async (contactId: string) => {
-    if (!user?.id) return;
-    
+    if (!internalUserId) return;
     if (!confirm('Remove this contact?')) return;
 
-    const result = await api.deleteContact(contactId, user.id);
+    const result = await api.deleteContact(contactId, internalUserId);
     if (result.success) {
       await loadContacts();
     } else {
@@ -166,19 +372,170 @@ const Popup: React.FC = () => {
     );
   }
 
+  if (chatContact) {
+    return (
+      <div className="w-[400px] h-[600px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
+        <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white p-4 shadow-lg flex justify-between items-center">
+          <div>
+            <h1 className="text-lg font-bold">{chatContact.contact_name}</h1>
+            <p className="text-xs text-primary-100">{chatContact.contact_email}</p>
+          </div>
+          <button
+            onClick={handleCloseChat}
+            className="text-white hover:text-gray-200 text-2xl transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 bg-white">
+          {loadingMessages ? (
+            <div className="text-center text-gray-500">Loading messages...</div>
+          ) : messages.length === 0 ? (
+            <div className="text-center text-gray-500 mt-8">No messages yet. Start the conversation!</div>
+          ) : (
+            messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`mb-4 flex ${msg.sender_id === internalUserId ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`px-5 py-3 rounded-2xl max-w-xs shadow-md ${
+                    msg.sender_id === internalUserId
+                      ? 'bg-primary-600 text-white rounded-br-none'
+                      : 'bg-gray-100 text-gray-800 rounded-bl-none'
+                  }`}
+                >
+                  <p className="text-base whitespace-pre-wrap leading-relaxed">
+                    {msg.content.split('\n').map((line, idx) => 
+  line.startsWith('📎 http') ? (
+    <div key={idx} className="mt-2 pt-2 border-t border-current border-opacity-20">
+      <span className="mr-1">📎</span>
+      <a 
+        href={line.replace('📎 ', '')} 
+        target="_blank" 
+        rel="noopener noreferrer"
+        className="underline hover:opacity-80 break-all text-xs"
+        title={line.replace('📎 ', '')}
+      >
+        {line.replace('📎 ', '').length > 40 
+          ? line.replace('📎 ', '').substring(0, 40) + '...' 
+          : line.replace('📎 ', '')}
+      </a>
+    </div>
+  ) : (
+    <div key={idx}>{line}</div>
+  )
+)}
+                  </p>
+                  <div className="flex items-center gap-2 mt-2">
+                    <p className="text-xs opacity-60">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </p>
+                    {msg.sender_id === internalUserId && (
+                      <button
+                        onClick={() => handleDeleteMessage(msg.id)}
+                        className="text-xs opacity-60 hover:opacity-100 transition-opacity"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+{processedPreview && (
+  <>
+    {/* Blur overlay */}
+    <div className="absolute inset-0 bg-black/20 backdrop-blur-sm z-40" onClick={() => setProcessedPreview(null)} />
+    
+    {/* Preview modal */}
+    <div className="absolute inset-0 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl border-2 border-primary-500 p-6 max-w-lg">
+        <p className="text-sm font-bold text-primary-700 mb-4">✨ Preview</p>
+        <p className="text-lg text-gray-800 mb-6 leading-relaxed">{processedPreview}</p>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => setProcessedPreview(null)} 
+            className="flex-1 px-4 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+          >
+            Edit
+          </button>
+          <button 
+            onClick={() => handleSendMessage()}
+            className="flex-1 px-4 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors font-medium"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  </>
+)}
+
+<div className="p-4 border-t border-gray-200 bg-white flex gap-2 rounded-t-xl relative">
+  <input
+    type="text"
+    placeholder="Type message..."
+    value={messageInput}
+    onChange={(e) => setMessageInput(e.target.value)}
+    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+    className="flex-1 px-4 py-2 border border-gray-300 rounded-full text-sm focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200"
+  />
+<div className="flex items-center gap-1">
+  <button
+    onClick={() => setShowProcessMenu(!showProcessMenu)}
+    className="text-primary-600 hover:text-primary-700 text-xl transition-colors"
+    title="Process message"
+  >
+    ✨
+  </button>
+  {selectedProcessType && (
+    <span className="text-[7px] bg-primary-100 text-primary-700 px-2 py-1 rounded-full font-medium">
+      {selectedProcessType}
+    </span>
+  )}
+</div>
+<button
+  onClick={() => handleSendMessage(selectedProcessType || undefined)}
+  disabled={!messageInput.trim() || processingMessage}
+  className="bg-primary-600 text-white px-6 py-2 rounded-full text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors shadow-md"
+>
+  {processingMessage ? 'Processing...' : 'Send'}
+</button>
+
+ {showProcessMenu && (
+  <div className="absolute bottom-16 right-4 bg-white rounded-lg shadow-lg border border-gray-200 z-10 w-48">
+    <div className="p-3 border-b border-gray-200 bg-gray-50">
+      <p className="text-xs font-medium text-gray-600">Selected: {selectedProcessType || 'None'}</p>
+    </div>
+    <button onClick={() => { setSelectedProcessType('proofread'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'proofread' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>✏️ Proofread</button>
+    <button onClick={() => { setSelectedProcessType('summarize'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'summarize' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>📄 Summarize</button>
+    <button onClick={() => { setSelectedProcessType('translate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'translate' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>🌐 Translate</button>
+    <button onClick={() => { setSelectedProcessType('rewrite'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'rewrite' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>✏️ Rewrite</button>
+    <button onClick={() => { setSelectedProcessType('generate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm ${selectedProcessType === 'generate' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>🔤 Generate</button>
+  </div>
+)}
+</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="w-[400px] h-[600px] bg-gray-50 flex flex-col">
-      <div className="bg-primary-600 text-white p-4 shadow-md">
+    <div className="w-[400px] h-[600px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
+      <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white p-4 shadow-lg">
         <h1 className="text-xl font-bold">Seer Sync</h1>
         <p className="text-sm text-primary-100">Real-time Communication in Browser</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
-        {/* User Profile */}
-        <div className="bg-white rounded-lg p-4 mb-4 shadow-sm border border-gray-200">
+        <div className="bg-white rounded-2xl p-4 mb-4 shadow-md border border-gray-200">
           <div className="flex items-center gap-3">
             {user.picture && (
-              <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full"/>
+              <img src={user.picture} alt={user.name} className="w-12 h-12 rounded-full shadow-sm"/>
             )}
             <div className="flex-1">
               <p className="font-semibold text-gray-800">{user.name}</p>
@@ -186,39 +543,92 @@ const Popup: React.FC = () => {
             </div>
             <button
               onClick={handleLogout}
-              className="text-sm text-red-600 hover:text-red-700 px-3 py-1 rounded hover:bg-red-50 transition-colors"
+              className="text-sm text-red-600 hover:text-red-700 px-3 py-1 rounded-lg hover:bg-red-50 transition-colors font-medium"
             >
               Logout
             </button>
           </div>
         </div>
 
-        {/* Contacts Section */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-4">
+        <div className="bg-white rounded-2xl shadow-md border border-gray-200 mb-4">
           <div className="p-4 border-b border-gray-200 flex justify-between items-center">
-            <h2 className="font-semibold text-gray-800">Contacts ({contacts.length})</h2>
-            <button
-              onClick={() => setShowAddContact(!showAddContact)}
-              className="text-primary-600 hover:text-primary-700 text-sm font-medium"
-            >
-              + Add
-            </button>
+            <h2 className="font-bold text-gray-800">Contacts ({contacts.length})</h2>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setShowAddContact(false);
+                  setShowInvite(!showInvite);
+                }}
+                className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors"
+              >
+                ✉️ Invite
+              </button>
+              <button
+                onClick={() => {
+                  setShowInvite(false);
+                  setShowAddContact(!showAddContact);
+                }}
+                className="text-primary-600 hover:text-primary-700 text-sm font-medium transition-colors"
+              >
+                + Add
+              </button>
+            </div>
           </div>
+
+          {showInvite && (
+            <div className="p-4 border-b border-gray-200 bg-blue-50">
+              <p className="text-xs text-blue-700 mb-2 font-medium">Send an invite to someone new</p>
+              <input
+                type="email"
+                placeholder="Enter email address"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+              />
+              <textarea
+                placeholder="Optional message"
+                value={inviteMessage}
+                onChange={(e) => setInviteMessage(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-300"
+                rows={2}
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSendInvite}
+                  disabled={sendingInvite || !inviteEmail.trim()}
+                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 font-medium transition-colors"
+                >
+                  {sendingInvite ? 'Sending...' : 'Send Invite'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowInvite(false);
+                    setInviteEmail('');
+                    setInviteMessage('');
+                  }}
+                  className="px-4 py-2 text-gray-600 text-sm hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {showAddContact && (
             <div className="p-4 border-b border-gray-200 bg-gray-50">
+              <p className="text-xs text-gray-600 mb-2 font-medium">Add existing user as contact</p>
               <input
                 type="email"
                 placeholder="Enter email address"
                 value={newContactEmail}
                 onChange={(e) => setNewContactEmail(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"
               />
               <div className="flex gap-2">
                 <button
                   onClick={handleAddContact}
                   disabled={addingContact || !newContactEmail.trim()}
-                  className="flex-1 bg-primary-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-700 disabled:opacity-50"
+                  className="flex-1 bg-primary-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-700 disabled:opacity-50 font-medium transition-colors"
                 >
                   {addingContact ? 'Adding...' : 'Add Contact'}
                 </button>
@@ -227,7 +637,7 @@ const Popup: React.FC = () => {
                     setShowAddContact(false);
                     setNewContactEmail('');
                   }}
-                  className="px-4 py-2 text-gray-600 text-sm"
+                  className="px-4 py-2 text-gray-600 text-sm hover:bg-gray-100 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
@@ -238,39 +648,33 @@ const Popup: React.FC = () => {
           <div className="max-h-64 overflow-y-auto">
             {contacts.length === 0 ? (
               <div className="p-8 text-center text-gray-500 text-sm">
-                No contacts yet. Add someone to start chatting!
+                No contacts yet. Invite friends or add existing users!
               </div>
             ) : (
               contacts.map((contact) => (
-                <div key={contact.id} className="p-3 border-b border-gray-100 hover:bg-gray-50 flex items-center gap-3">
+                <div key={contact.id} className="p-3 border-b border-gray-100 hover:bg-blue-50 flex items-center gap-3 transition-colors">
                   {contact.contact_picture && (
-                    <img src={contact.contact_picture} alt={contact.contact_name} className="w-10 h-10 rounded-full"/>
+                    <img src={contact.contact_picture} alt={contact.contact_name} className="w-10 h-10 rounded-full shadow-sm"/>
                   )}
                   <div className="flex-1">
                     <p className="font-medium text-gray-800 text-sm">{contact.contact_name}</p>
                     <p className="text-xs text-gray-500">{contact.contact_email}</p>
                   </div>
                   <button
+                    onClick={() => handleOpenChat(contact)}
+                    className="text-blue-600 hover:text-blue-700 text-xs mr-2 font-medium transition-colors"
+                  >
+                    💬 Chat
+                  </button>
+                  <button
                     onClick={() => handleDeleteContact(contact.id)}
-                    className="text-red-500 hover:text-red-700 text-xs"
+                    className="text-red-500 hover:text-red-700 text-xs font-medium transition-colors"
                   >
                     Remove
                   </button>
                 </div>
               ))
             )}
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
-            <p className="text-sm text-gray-500 mb-1">Messages</p>
-            <p className="text-2xl font-bold text-primary-600">0</p>
-          </div>
-          <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
-            <p className="text-sm text-gray-500 mb-1">Status</p>
-            <p className="text-sm font-semibold text-green-600">Online</p>
           </div>
         </div>
       </div>
