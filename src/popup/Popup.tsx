@@ -39,6 +39,7 @@ const Popup: React.FC = () => {
   const [processingMessage, setProcessingMessage] = useState(false);
   const [processedPreview, setProcessedPreview] = useState<string | null>(null);
   const [pageContent, setPageContent] = useState<string>('');
+
   useEffect(() => {
     initializePopup();
   }, []);
@@ -62,9 +63,22 @@ const Popup: React.FC = () => {
   }, [chatContact, internalUserId]);
 
   useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.url) {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]?.url && tabs[0].id) {
         setCurrentUrl(tabs[0].url);
+        
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => document.body.innerText.substring(0, 500)
+          });
+          
+          if (results && results[0]?.result) {
+            setPageContent(results[0].result as string);
+          }
+        } catch (error) {
+          console.error('Failed to get page content:', error);
+        }
       }
     });
   }, []);
@@ -140,7 +154,6 @@ const Popup: React.FC = () => {
     if (!messageInput.trim() || !internalUserId || !chatContact) return;
 
     if (processType && !processedPreview) {
-      // First stage: process and show preview
       setProcessingMessage(true);
       const processed = await processMessage(messageInput.trim(), processType);
       setProcessedPreview(processed);
@@ -148,7 +161,6 @@ const Popup: React.FC = () => {
       return;
     }
 
-    // Second stage: send
     const finalMessage = processedPreview || messageInput.trim();
     const messageWithUrl = `${finalMessage}\n\n📎 ${currentUrl}`;
 
@@ -170,37 +182,37 @@ const Popup: React.FC = () => {
     }
   };
 
-const processMessage = async (text: string, type: string): Promise<string> => {
-  console.log('Processing:', { text, type });
-  try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    
-    const prompt = getPrompt(text, type);
-    console.log('Prompt:', prompt);
-    
-    const result = await model.generateContent(prompt);
-    const processedText = result.response.text();
-    
-    console.log('Processed text:', processedText);
-    return processedText;
-  } catch (error) {
-    console.error('Gemini API error:', error);
-    return text;
-  }
-};
-
-const getPrompt = (text: string, type: string): string => {
-  const prompts: { [key: string]: string } = {
-    proofread: `Fix grammar and spelling errors in this text, keep it concise:\n"${text}"`,
-    summarize: `Summarize this in 1-2 sentences:\n"${text}"`,
-    translate: `Translate this to Spanish:\n"${text}"`,
-    rewrite: `Rewrite this in a better way:\n"${text}"`,
-    generate: `Generate a professional version of this:\n"${text}"`
+  const processMessage = async (text: string, type: string): Promise<string> => {
+    console.log('Processing:', { text, type });
+    try {
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      
+      const prompt = getPrompt(text, type);
+      console.log('Prompt:', prompt);
+      
+      const result = await model.generateContent(prompt);
+      const processedText = result.response.text();
+      
+      console.log('Processed text:', processedText);
+      return processedText;
+    } catch (error) {
+      console.error('Gemini API error:', error);
+      return text;
+    }
   };
-  return prompts[type] || text;
-};
 
+  const getPrompt = (text: string, type: string): string => {
+    const context = pageContent ? `\n\nPage context: ${pageContent}` : '';
+    const prompts: { [key: string]: string } = {
+      proofread: `Fix grammar in this message:\n"${text}"${context}`,
+      summarize: `Summarize in 1-3 sentences:\n"${text}"${context}`,
+      translate: `Translate to English:\n"${text}"${context}`,
+      rewrite: `Rewrite better:\n"${text}"${context}`,
+      generate: `Generate professional version:\n"${text}"${context}`
+    };
+    return prompts[type] || text;
+  };
 
   const handleDeleteMessage = async (messageId: string) => {
     try {
@@ -328,14 +340,14 @@ const getPrompt = (text: string, type: string): string => {
 
   if (!user) {
     return (
-      <div className="w-[400px] h-[600px] bg-gray-50">
+      <div className="w-[450px] h-[595px] bg-gray-50">
         <div className="bg-primary-600 text-white p-4 shadow-md">
           <h1 className="text-xl font-bold">Seer Sync</h1>
           <p className="text-sm text-primary-100">Real-time Communication</p>
         </div>
 
         <div className="p-4">
-          <div className="flex flex-col items-center justify-center h-[500px]">
+          <div className="flex flex-col items-center justify-center h-[550px]">
             <div className="text-center mb-8">
               <div className="text-6xl mb-4">💬</div>
               <h2 className="text-2xl font-bold text-gray-800 mb-2">
@@ -374,7 +386,7 @@ const getPrompt = (text: string, type: string): string => {
 
   if (chatContact) {
     return (
-      <div className="w-[400px] h-[600px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
+      <div className="w-[450px] h-[595px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
         <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white p-4 shadow-lg flex justify-between items-center">
           <div>
             <h1 className="text-lg font-bold">{chatContact.contact_name}</h1>
@@ -408,25 +420,25 @@ const getPrompt = (text: string, type: string): string => {
                 >
                   <p className="text-base whitespace-pre-wrap leading-relaxed">
                     {msg.content.split('\n').map((line, idx) => 
-  line.startsWith('📎 http') ? (
-    <div key={idx} className="mt-2 pt-2 border-t border-current border-opacity-20">
-      <span className="mr-1">📎</span>
-      <a 
-        href={line.replace('📎 ', '')} 
-        target="_blank" 
-        rel="noopener noreferrer"
-        className="underline hover:opacity-80 break-all text-xs"
-        title={line.replace('📎 ', '')}
-      >
-        {line.replace('📎 ', '').length > 40 
-          ? line.replace('📎 ', '').substring(0, 40) + '...' 
-          : line.replace('📎 ', '')}
-      </a>
-    </div>
-  ) : (
-    <div key={idx}>{line}</div>
-  )
-)}
+                      line.startsWith('📎 http') ? (
+                        <div key={idx} className="mt-2 pt-2 border-t border-current border-opacity-20">
+                          <span className="mr-1">📎</span>
+                          <a 
+                            href={line.replace('📎 ', '')} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="underline hover:opacity-80 break-all text-xs"
+                            title={line.replace('📎 ', '')}
+                          >
+                            {line.replace('📎 ', '').length > 40 
+                              ? line.replace('📎 ', '').substring(0, 40) + '...' 
+                              : line.replace('📎 ', '')}
+                          </a>
+                        </div>
+                      ) : (
+                        <div key={idx}>{line}</div>
+                      )
+                    )}
                   </p>
                   <div className="flex items-center gap-2 mt-2">
                     <p className="text-xs opacity-60">
@@ -447,85 +459,82 @@ const getPrompt = (text: string, type: string): string => {
           )}
         </div>
 
-{processedPreview && (
-  <>
-    {/* Blur overlay */}
-    <div className="absolute inset-0 bg-black/20 backdrop-blur-sm z-40" onClick={() => setProcessedPreview(null)} />
-    
-    {/* Preview modal */}
-    <div className="absolute inset-0 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl border-2 border-primary-500 p-6 max-w-lg">
-        <p className="text-sm font-bold text-primary-700 mb-4">✨ Preview</p>
-        <p className="text-lg text-gray-800 mb-6 leading-relaxed">{processedPreview}</p>
-        <div className="flex gap-2">
-          <button 
-            onClick={() => setProcessedPreview(null)} 
-            className="flex-1 px-4 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+        {processedPreview && (
+          <>
+            <div className="absolute inset-0 bg-black/20 backdrop-blur-sm z-40" onClick={() => setProcessedPreview(null)} />
+            <div className="absolute inset-0 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl shadow-2xl border-2 border-primary-500 p-8 max-w-md min-h-64">
+                <p className="text-sm font-bold text-primary-700 mb-4">✨ Preview</p>
+                <p className="text-lg text-gray-800 mb-6 leading-relaxed">{processedPreview}</p>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setProcessedPreview(null)} 
+                    className="flex-1 px-4 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button 
+                    onClick={() => handleSendMessage()}
+                    className="flex-1 px-4 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors font-medium"
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="p-4 border-t border-gray-200 bg-white flex gap-2 rounded-t-xl relative">
+          <input
+            type="text"
+            placeholder="Type message..."
+            value={messageInput}
+            onChange={(e) => setMessageInput(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-full text-sm focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200"
+          />
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowProcessMenu(!showProcessMenu)}
+              className="text-primary-600 hover:text-primary-700 text-xl transition-colors"
+              title="Process message"
+            >
+              ✨
+            </button>
+            {selectedProcessType && (
+              <span className="text-[7px] bg-primary-100 text-primary-700 px-2 py-1 rounded-full font-medium">
+                {selectedProcessType}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => handleSendMessage(selectedProcessType || undefined)}
+            disabled={!messageInput.trim() || processingMessage}
+            className="bg-primary-600 text-white px-6 py-2 rounded-full text-xs font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors shadow-md"
           >
-            Edit
+            {processingMessage ? 'Processing...' : 'Send'}
           </button>
-          <button 
-            onClick={() => handleSendMessage()}
-            className="flex-1 px-4 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors font-medium"
-          >
-            Send
-          </button>
+
+          {showProcessMenu && (
+            <div className="absolute bottom-16 right-4 bg-white rounded-lg shadow-lg border border-gray-200 z-10 w-48">
+              <div className="p-3 border-b border-gray-200 bg-gray-50">
+                <p className="text-xs font-medium text-gray-600">Selected: {selectedProcessType || 'None'}</p>
+              </div>
+              <button onClick={() => { setSelectedProcessType('proofread'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'proofread' ? 'bg-[#122E34]/10' : 'hover:bg-gray-50'}`}>✏️ Proofread</button>
+              <button onClick={() => { setSelectedProcessType('summarize'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'summarize' ? 'bg-[#122E34]/10' : 'hover:bg-gray-50'}`}>📄 Summarize</button>
+              <button onClick={() => { setSelectedProcessType('translate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'translate' ? 'bg-[#122E34]/10' : 'hover:bg-gray-50'}`}>🌐 Translate</button>
+              <button onClick={() => { setSelectedProcessType('rewrite'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'rewrite' ? 'bg-[#122E34]/10' : 'hover:bg-gray-50'}`}>✏️ Rewrite</button>
+              <button onClick={() => { setSelectedProcessType('generate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm ${selectedProcessType === 'generate' ? 'bg-[#122E34]/10' : 'hover:bg-gray-50'}`}>🔤 Generate</button>
+            </div>
+          )}
         </div>
-      </div>
-    </div>
-  </>
-)}
-
-<div className="p-4 border-t border-gray-200 bg-white flex gap-2 rounded-t-xl relative">
-  <input
-    type="text"
-    placeholder="Type message..."
-    value={messageInput}
-    onChange={(e) => setMessageInput(e.target.value)}
-    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-    className="flex-1 px-4 py-2 border border-gray-300 rounded-full text-sm focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200"
-  />
-<div className="flex items-center gap-1">
-  <button
-    onClick={() => setShowProcessMenu(!showProcessMenu)}
-    className="text-primary-600 hover:text-primary-700 text-xl transition-colors"
-    title="Process message"
-  >
-    ✨
-  </button>
-  {selectedProcessType && (
-    <span className="text-[7px] bg-primary-100 text-primary-700 px-2 py-1 rounded-full font-medium">
-      {selectedProcessType}
-    </span>
-  )}
-</div>
-<button
-  onClick={() => handleSendMessage(selectedProcessType || undefined)}
-  disabled={!messageInput.trim() || processingMessage}
-  className="bg-primary-600 text-white px-6 py-2 rounded-full text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors shadow-md"
->
-  {processingMessage ? 'Processing...' : 'Send'}
-</button>
-
- {showProcessMenu && (
-  <div className="absolute bottom-16 right-4 bg-white rounded-lg shadow-lg border border-gray-200 z-10 w-48">
-    <div className="p-3 border-b border-gray-200 bg-gray-50">
-      <p className="text-xs font-medium text-gray-600">Selected: {selectedProcessType || 'None'}</p>
-    </div>
-    <button onClick={() => { setSelectedProcessType('proofread'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'proofread' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>✏️ Proofread</button>
-    <button onClick={() => { setSelectedProcessType('summarize'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'summarize' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>📄 Summarize</button>
-    <button onClick={() => { setSelectedProcessType('translate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'translate' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>🌐 Translate</button>
-    <button onClick={() => { setSelectedProcessType('rewrite'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm border-b ${selectedProcessType === 'rewrite' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>✏️ Rewrite</button>
-    <button onClick={() => { setSelectedProcessType('generate'); setShowProcessMenu(false); }} className={`w-full px-4 py-2 text-left text-sm ${selectedProcessType === 'generate' ? 'bg-blue-100' : 'hover:bg-gray-50'}`}>🔤 Generate</button>
-  </div>
-)}
-</div>
       </div>
     );
   }
 
   return (
-    <div className="w-[400px] h-[600px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
+    <div className="w-[450px] h-[650px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
       <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white p-4 shadow-lg">
         <h1 className="text-xl font-bold">Seer Sync</h1>
         <p className="text-sm text-primary-100">Real-time Communication in Browser</p>
@@ -559,7 +568,7 @@ const getPrompt = (text: string, type: string): string => {
                   setShowAddContact(false);
                   setShowInvite(!showInvite);
                 }}
-                className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors"
+                className="text-[#122E34] hover:text-[#122E34] text-sm font-medium transition-colors"
               >
                 ✉️ Invite
               </button>
@@ -576,27 +585,27 @@ const getPrompt = (text: string, type: string): string => {
           </div>
 
           {showInvite && (
-            <div className="p-4 border-b border-gray-200 bg-blue-50">
-              <p className="text-xs text-blue-700 mb-2 font-medium">Send an invite to someone new</p>
+            <div className="p-4 border-b border-gray-200 bg-[#122E34]/5">
+              <p className="text-xs text-[#122E34] mb-2 font-medium">Send an invite to someone new</p>
               <input
                 type="email"
                 placeholder="Enter email address"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#122E34]/20"
               />
               <textarea
                 placeholder="Optional message"
                 value={inviteMessage}
                 onChange={(e) => setInviteMessage(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-300"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#122E34]/20"
                 rows={2}
               />
               <div className="flex gap-2">
                 <button
                   onClick={handleSendInvite}
                   disabled={sendingInvite || !inviteEmail.trim()}
-                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50 font-medium transition-colors"
+                  className="flex-1 bg-[#122E34] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#122E34] disabled:opacity-50 font-medium transition-colors"
                 >
                   {sendingInvite ? 'Sending...' : 'Send Invite'}
                 </button>
@@ -652,7 +661,7 @@ const getPrompt = (text: string, type: string): string => {
               </div>
             ) : (
               contacts.map((contact) => (
-                <div key={contact.id} className="p-3 border-b border-gray-100 hover:bg-blue-50 flex items-center gap-3 transition-colors">
+                <div key={contact.id} className="p-3 border-b border-gray-100 hover:bg-[#122E34]/5 flex items-center gap-3 transition-colors">
                   {contact.contact_picture && (
                     <img src={contact.contact_picture} alt={contact.contact_name} className="w-10 h-10 rounded-full shadow-sm"/>
                   )}
@@ -662,7 +671,7 @@ const getPrompt = (text: string, type: string): string => {
                   </div>
                   <button
                     onClick={() => handleOpenChat(contact)}
-                    className="text-blue-600 hover:text-blue-700 text-xs mr-2 font-medium transition-colors"
+                    className="text-[#122E34] hover:text-[#122E34] text-xs mr-2 font-medium transition-colors"
                   >
                     💬 Chat
                   </button>

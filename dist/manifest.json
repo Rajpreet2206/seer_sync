@@ -24,6 +24,7 @@
     }
   ],
   "permissions": [
+    "scripting",
     "storage",
     "tabs",
     "identity"
@@ -31,7 +32,8 @@
   "host_permissions": [
     "http://localhost:8000/*",
     "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "<all_urls>"
   ],
    "oauth2": {
     "client_id": "880394972027-s041m973m5p2h58efvim83jf9mm9i1dg.apps.googleusercontent.com",
