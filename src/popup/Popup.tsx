@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api/client';
 import { signInWithGoogle, signOut, getCurrentUser } from '../../extension/src/lib/auth/google-auth';
 import type { User } from '../types/auth.types';
@@ -39,7 +39,15 @@ const Popup: React.FC = () => {
   const [processingMessage, setProcessingMessage] = useState(false);
   const [processedPreview, setProcessedPreview] = useState<string | null>(null);
   const [pageContent, setPageContent] = useState<string>('');
-
+  const [generatingResponse, setGeneratingResponse] = useState(false);
+  const [contextData, setContextData] = useState<any>(null);
+  const [showQuickSend, setShowQuickSend] = useState(false);
+  const [sendingToContact, setSendingToContact] = useState(false);
+  const [contextProcessType, setContextProcessType] = useState<string | null>(null);
+  const [processingContextMessage, setProcessingContextMessage] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hasScrolledRef = useRef(false);
+  //const [pollingMessages, setPollingMessages] = useState(false);
   useEffect(() => {
     initializePopup();
   }, []);
@@ -82,6 +90,103 @@ const Popup: React.FC = () => {
       }
     });
   }, []);
+
+
+useEffect(() => {
+  if (chatContact && messages.length > 0 && !hasScrolledRef.current) {
+    setTimeout(() => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        hasScrolledRef.current = true;
+      }
+    }, 100);
+  }
+}, [chatContact, messages.length]);
+
+
+// Reset scroll flag when chat closes
+useEffect(() => {
+  if (!chatContact) {
+    hasScrolledRef.current = false;
+  }
+}, [chatContact]);
+
+
+
+useEffect(() => {
+  if (!user) return;
+  
+  chrome.runtime.sendMessage({ type: 'GET_CONTEXT_DATA' }, (response) => {
+    if (response && response.text) {
+      console.log('Context data received:', response);
+      setContextData(response);
+      setShowQuickSend(true);
+    }
+  });
+}, [user]);
+
+useEffect(() => {
+  if (internalUserId && contacts.length > 0) {
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_CONTACTS',
+      contacts: contacts,
+      userId: internalUserId
+    });
+  }
+}, [contacts, internalUserId]);
+
+
+
+// Add this function to send selected text to a contact
+const handleSendContextToContact = async (contact: Contact) => {
+  if (!contextData || !internalUserId) return;
+
+  setSendingToContact(true);
+  try {
+    let finalText = contextData.text;
+
+    // Apply processing if selected
+    if (contextProcessType) {
+      setProcessingContextMessage(true);
+      finalText = await processMessage(contextData.text, contextProcessType);
+      setProcessingContextMessage(false);
+    }
+
+const messageContent = `📌 "${finalText}"\n\n📎 ${contextData.url}`;
+    
+    const resp = await fetch(
+      `${API_URL}/api/v1/messages/send?sender_id=${internalUserId}&receiver_id=${contact.contact_user_id}&content=${encodeURIComponent(messageContent)}`,
+      { method: 'POST' }
+    ).then(r => r.json());
+
+    if (resp.success) {
+      alert(`Sent to ${contact.contact_name}!`);
+      setContextData(null);
+      setShowQuickSend(false);
+      setContextProcessType(null);
+    }
+  } catch (error) {
+    console.error('Send context failed:', error);
+    alert('Failed to send');
+  } finally {
+    setSendingToContact(false);
+  }
+};
+
+const generateMockReceiverResponse = async (userMessage: string): Promise<string> => {
+  try {
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    const prompt = `You are a helpful assistant in a chat. The user just sent this message: "${userMessage}"\n\nRespond naturally and briefly (1-2 sentences) as if you're the other person in the conversation. Keep it conversational and friendly.`;
+    
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  } catch (error) {
+    console.error('Generate response error:', error);
+    return "Thanks for your message!";
+  }
+};
 
   const initializePopup = async () => {
     const currentUser = await getCurrentUser();
@@ -135,52 +240,79 @@ const Popup: React.FC = () => {
     }
   };
 
-  const loadMessages = async () => {
-    if (!chatContact || !internalUserId) return;
-    setLoadingMessages(true);
-    try {
-      const resp = await fetch(
-        `${API_URL}/api/v1/messages/history?user_id=${internalUserId}&contact_id=${chatContact.contact_user_id}`
-      ).then(r => r.json());
-      setMessages(resp || []);
-    } catch (error) {
-      console.error('Load messages failed:', error);
-    } finally {
-      setLoadingMessages(false);
-    }
-  };
-
-  const handleSendMessage = async (processType?: string) => {
-    if (!messageInput.trim() || !internalUserId || !chatContact) return;
-
-    if (processType && !processedPreview) {
-      setProcessingMessage(true);
-      const processed = await processMessage(messageInput.trim(), processType);
-      setProcessedPreview(processed);
-      setProcessingMessage(false);
-      return;
-    }
-
-    const finalMessage = processedPreview || messageInput.trim();
-    const messageWithUrl = `${finalMessage}\n\n📎 ${currentUrl}`;
-
-    try {
-      const resp = await fetch(
-        `${API_URL}/api/v1/messages/send?sender_id=${internalUserId}&receiver_id=${chatContact.contact_user_id}&content=${encodeURIComponent(messageWithUrl)}`,
-        { method: 'POST' }
-      ).then(r => r.json());
-
-      if (resp.success) {
-        setMessageInput('');
-        setShowProcessMenu(false);
-        setSelectedProcessType(null);
-        setProcessedPreview(null);
-        await loadMessages();
+const loadMessages = async () => {
+  if (!chatContact || !internalUserId) return;
+  setLoadingMessages(true);
+  try {
+    const resp = await fetch(
+      `${API_URL}/api/v1/messages/history?user_id=${internalUserId}&contact_id=${chatContact.contact_user_id}`
+    ).then(r => r.json());
+    
+    // Only update state if messages actually changed
+    setMessages((prevMessages) => {
+      const newMessagesJSON = JSON.stringify(resp || []);
+      const oldMessagesJSON = JSON.stringify(prevMessages);
+      
+      if (newMessagesJSON !== oldMessagesJSON) {
+        return resp || [];
       }
-    } catch (error) {
-      console.error('Send message failed:', error);
+      return prevMessages;
+    });
+  } catch (error) {
+    console.error('Load messages failed:', error);
+  } finally {
+    setLoadingMessages(false);
+  }
+};
+
+// Update handleSendMessage to add mock response
+const handleSendMessage = async (processType?: string) => {
+  if (!messageInput.trim() || !internalUserId || !chatContact) return;
+
+  if (processType && !processedPreview) {
+    setProcessingMessage(true);
+    const processed = await processMessage(messageInput.trim(), processType);
+    setProcessedPreview(processed);
+    setProcessingMessage(false);
+    return;
+  }
+
+  const finalMessage = processedPreview || messageInput.trim();
+  const messageWithUrl = `${finalMessage}\n\n📎 ${currentUrl}`;
+
+  try {
+    const resp = await fetch(
+      `${API_URL}/api/v1/messages/send?sender_id=${internalUserId}&receiver_id=${chatContact.contact_user_id}&content=${encodeURIComponent(messageWithUrl)}`,
+      { method: 'POST' }
+    ).then(r => r.json());
+
+    if (resp.success) {
+      setMessageInput('');
+      setShowProcessMenu(false);
+      setSelectedProcessType(null);
+      setProcessedPreview(null);
+      await loadMessages();
+
+      // Generate and show mock receiver response after a short delay
+      setGeneratingResponse(true);
+      setTimeout(async () => {
+        const mockResponse = await generateMockReceiverResponse(finalMessage);
+        setMessages((prevMessages) => [
+          ...prevMessages,
+          {
+            id: Date.now().toString(),
+            sender_id: chatContact.contact_user_id,
+            content: mockResponse,
+            created_at: new Date().toISOString()
+          }
+        ]);
+        setGeneratingResponse(false);
+      }, 1000);
     }
-  };
+  } catch (error) {
+    console.error('Send message failed:', error);
+  }
+};
 
   const processMessage = async (text: string, type: string): Promise<string> => {
     console.log('Processing:', { text, type });
@@ -388,10 +520,12 @@ const Popup: React.FC = () => {
     return (
       <div className="w-[450px] h-[595px] bg-gradient-to-b from-gray-50 to-gray-100 flex flex-col">
         <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white p-4 shadow-lg flex justify-between items-center">
-          <div>
-            <h1 className="text-lg font-bold">{chatContact.contact_name}</h1>
-            <p className="text-xs text-primary-100">{chatContact.contact_email}</p>
-          </div>
+<div>
+  <h1 className="text-lg font-bold">
+    {chatContact.contact_name}
+  </h1>
+  <p className="text-xs text-primary-100">{chatContact.contact_email}</p>
+</div>
           <button
             onClick={handleCloseChat}
             className="text-white hover:text-gray-200 text-2xl transition-colors"
@@ -457,6 +591,18 @@ const Popup: React.FC = () => {
               </div>
             ))
           )}
+          {generatingResponse && (
+  <div className="mb-4 flex justify-start">
+    <div className="px-5 py-3 rounded-2xl bg-gray-100 text-gray-800 rounded-bl-none shadow-md">
+      <div className="flex gap-2 items-center">
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></div>
+      </div>
+    </div>
+  </div>
+)}
+ <div ref={messagesEndRef} />
         </div>
 
         {processedPreview && (
@@ -687,7 +833,117 @@ const Popup: React.FC = () => {
           </div>
         </div>
       </div>
+
+{showQuickSend && contextData && (
+  <>
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40" onClick={() => setShowQuickSend(false)} />
+    <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl border-2 border-primary-500 p-6 max-w-md">
+        <h3 className="text-lg font-bold text-gray-800 mb-2">Send Selected Text</h3>
+        
+        <div className="bg-gray-50 rounded-lg p-3 mb-4 max-h-24 overflow-y-auto">
+          <p className="text-sm text-gray-600 italic">"{contextData.text}"</p>
+          <p className="text-xs text-gray-500 mt-2">{contextData.title}</p>
+        </div>
+
+        <div className="mb-4 pb-4 border-b border-gray-200">
+          <p className="text-xs font-medium text-gray-600 mb-2">Process:</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setContextProcessType(null)}
+              className={`px-2 py-1 text-xs rounded-lg transition-colors ${
+                contextProcessType === null
+                  ? 'bg-primary-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              None
+            </button>
+            <button
+              onClick={() => setContextProcessType('proofread')}
+              className={`px-2 py-1 text-xs rounded-lg transition-colors ${
+                contextProcessType === 'proofread'
+                  ? 'bg-primary-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              ✏️ Proofread
+            </button>
+            <button
+              onClick={() => setContextProcessType('summarize')}
+              className={`px-2 py-1 text-xs rounded-lg transition-colors ${
+                contextProcessType === 'summarize'
+                  ? 'bg-primary-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              📄 Summarize
+            </button>
+            <button
+              onClick={() => setContextProcessType('rewrite')}
+              className={`px-2 py-1 text-xs rounded-lg transition-colors ${
+                contextProcessType === 'rewrite'
+                  ? 'bg-primary-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              ✏️ Rewrite
+            </button>
+          </div>
+        </div>
+
+        <p className="text-xs font-medium text-gray-600 mb-3">Send to:</p>
+        
+        <div className="space-y-2 max-h-48 overflow-y-auto mb-4">
+          {contacts.length === 0 ? (
+            <p className="text-sm text-gray-500">No contacts available</p>
+          ) : (
+            contacts.map((contact) => (
+              <button
+                key={contact.id}
+                onClick={() => handleSendContextToContact(contact)}
+                disabled={sendingToContact || processingContextMessage}
+                className="w-full flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:bg-primary-50 hover:border-primary-300 transition-colors disabled:opacity-50"
+              >
+                {contact.contact_picture && (
+                  <img src={contact.contact_picture} alt={contact.contact_name} className="w-8 h-8 rounded-full"/>
+                )}
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-medium text-gray-800">{contact.contact_name}</p>
+                  <p className="text-xs text-gray-500">{contact.contact_email}</p>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+
+        <button
+          onClick={() => {
+            setShowQuickSend(false);
+            setContextProcessType(null);
+          }}
+          className="w-full px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
+  </>
+)}
+
+{generatingResponse && (
+  <div className="mb-4 flex justify-start">
+    <div className="px-5 py-3 rounded-2xl bg-gray-100 text-gray-800 rounded-bl-none shadow-md">
+      <div className="flex gap-2 items-center">
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></div>
+      </div>
+    </div>
+  </div>
+)}
+    </div>
+    
   );
 };
 
