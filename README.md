@@ -8,6 +8,8 @@
 - ✅ User Registration - Users sync to backend
 - ✅ Extension ↔ Backend Communication working
 
+### ![System Architecture](System_Architecture.png)
+
 ### What're the next steps:
 - A. Real-time Messaging (WebRTC + CRDT)
 
